@@ -46,6 +46,7 @@
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
+#define IMUNUM 2
 volatile uint8_t cs;
 
 
@@ -68,7 +69,7 @@ static float angular_rate_mdps[3];
 static float temperature_degC;
 static uint8_t whoamI, rst;
 static uint8_t tx_buffer[1000];
-static char deviceError[100];
+static uint16_t deviceError[100];
 /* USER CODE END PV */
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi4;
@@ -129,11 +130,13 @@ int main(void)
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
   /* USER CODE BEGIN Init */
-   stmdev_ctx_t dev_ctx;
-   dev_ctx.write_reg = SPI_Write;
-   dev_ctx.read_reg = SPI_Read;
-   dev_ctx.handle = &hspi1;
-   /* USER CODE END Init */
+  uint16_t pattern_len;
+  lsm6ds3_int1_route_t int_1_reg;
+  stmdev_ctx_t dev_ctx;
+  dev_ctx.write_reg = SPI_Write;
+  dev_ctx.read_reg = SPI_Read;
+  dev_ctx.handle = &hspi1;
+  /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
@@ -148,47 +151,79 @@ int main(void)
   MX_SPI1_Init();
   MX_SPI4_Init();
   /* USER CODE BEGIN 2 */
-   cs = 0;
-   lsm6ds3_device_id_get(&dev_ctx, &whoamI);
-   if (whoamI != LSM6DS3_ID)
-     while(1)
-     {
-       deviceError = "ERROR: IMU 0 was not detected!!!!";
-     }
-   whoamI = 0x00U;
-   cs = 1;
-   lsm6ds3_device_id_get(&dev_ctx, &whoamI);
-   if (whoamI != LSM6DS3_ID)
-	 while(1)
-     {
-       deviceError = "ERROR: IMU 1 was not detected!!!!";
-     }
-
-   /*
-    * Restore default configuration for IMU 0 and IMU 1.
-    */
-   cs = 0;
-   lsm6ds3_reset_set(&dev_ctx, PROPERTY_ENABLE);
-   do
-   {
- 	  lsm6ds3_reset_get(&dev_ctx, &rst);
-   }while (rst);
-   cs = 1;
-   lsm6ds3_reset_set(&dev_ctx, PROPERTY_ENABLE);
-   do
-   {
-   	  lsm6ds3_reset_get(&dev_ctx, &rst);
-   }while (rst);
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
+  int i;
+  for (i = 0; i < IMUNUM; i++)
   {
+    cs = i;
+    lsm6ds3_device_id_get(&dev_ctx, &whoamI);
+    if (whoamI != LSM6DS3_ID)
+    while(1)
+      {
+        deviceError = "ERROR: IMU 0 was not detected!!!!";
+      }
+    lsm6ds3_reset_set(&dev_ctx, PROPERTY_ENABLE);
+    do
+    {
+      lsm6ds3_reset_get(&dev_ctx, &rst);
+    }while (rst);
+    /*
+   * Set XL full scale and Gyro full scale
+   */
+    lsm6ds3_xl_full_scale_set(&dev_ctx, LSM6DS3_2g);
+    lsm6ds3_gy_full_scale_set(&dev_ctx, LSM6DS3_500dps);
+    /*
+   * Enable Block Data Update (BDU) when FIFO support selected
+   */
+    lsm6ds3_block_data_update_set(&dev_ctx, PROPERTY_ENABLE);
+    /*
+   * Set FIFO watermark to a multiple of a pattern
+   * in this example we set watermark to 10 pattern
+   * which means ten sequence of:
+   * (GYRO + XL) = 12 bytes
+   */
+    pattern_len = 12;
+    lsm6ds3_fifo_watermark_set(&dev_ctx, 10 * pattern_len);
+    /*
+   * Set FIFO mode to Stream mode
+   */
+    lsm6ds3_fifo_mode_set(&dev_ctx, LSM6DS3_STREAM_MODE);
+    /*
+   * Enable FIFO watermark interrupt generation on INT1 pin
+   */
+    lsm6ds3_pin_int1_route_get(&dev_ctx, &int_1_reg);
+    int_1_reg.int1_fth = PROPERTY_ENABLE;
+    lsm6ds3_pin_int1_route_set(&dev_ctx, &int_1_reg);
 
-  /* USER CODE END WHILE */
+    /*
+   * FIFO watermark interrupt on INT2 pin
+    /*
+   * Set FIFO sensor decimator
+   */
+    lsm6ds3_fifo_xl_batch_set(&dev_ctx, LSM6DS3_FIFO_XL_NO_DEC);
+    lsm6ds3_fifo_gy_batch_set(&dev_ctx, LSM6DS3_FIFO_GY_NO_DEC);
+    /*
+   * Set ODR FIFO
+   */
+    lsm6ds3_fifo_data_rate_set(&dev_ctx, LSM6DS3_FIFO_833Hz);
+    /*
+   * Set XL and Gyro Output Data Rate:
+   * in this example we set 52 Hz for Accelerometer and
+   * 52 Hz for Gyroscope
+   */
+    lsm6ds3_xl_data_rate_set(&dev_ctx, LSM6DS3_XL_ODR_833Hz);
+    lsm6ds3_gy_data_rate_set(&dev_ctx, LSM6DS3_GY_ODR_833Hz);
+  }
+  cs = 0;
+   /* USER CODE END 2 */
 
-  /* USER CODE BEGIN 3 */
+   /* Infinite loop */
+   /* USER CODE BEGIN WHILE */
+   while (1)
+   {
+
+     /* USER CODE END WHILE */
+
+     /* USER CODE BEGIN 3 */
 
   }
   /* USER CODE END 3 */
