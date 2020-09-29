@@ -1,3 +1,4 @@
+#Used for the Large Scale Model of the Robotic Dog
 import time
 from numpy import *
 import board
