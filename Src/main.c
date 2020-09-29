@@ -39,78 +39,122 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_hal.h"
-#include "lsm6ds3_reg.h"
-#include "string.h"
-/* USER CODE BEGIN Includes */
 
+/* USER CODE BEGIN Includes */
+#include "sd_hal_mpu6050.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
-#define IMUNUM 2
-volatile uint8_t cs;
+I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_rx;
+DMA_HandleTypeDef hdma_i2c1_tx;
 
-
-typedef union{
-  int16_t i16bit[3];
-  uint8_t u8bit[6];
-} XYZMeasurement16_t;
-//Optional Variable for Temp Sensor
-typedef union{
-  int16_t i16bit;
-  uint8_t u8bit[2];
-}TemperatureMeasurement16_t;
-/* USER CODE BEGIN PV */
-/* Private variables ---------------------------------------------------------*/
-static XYZMeasurement16_t data_raw_acceleration;
-static XYZMeasurement16_t data_raw_angular_rate;
-static TemperatureMeasurement16_t data_raw_temperature;
-static float acceleration_mg[3];
-static float angular_rate_mdps[3];
-static float temperature_degC;
-static uint8_t whoamI, rst;
-static uint8_t tx_buffer[1000];
-static uint16_t deviceError[100];
-/* USER CODE END PV */
-SPI_HandleTypeDef hspi1;
-SPI_HandleTypeDef hspi4;
-DMA_HandleTypeDef hdma_spi1_rx;
-DMA_HandleTypeDef hdma_spi1_tx;
-DMA_HandleTypeDef hdma_spi4_tx;
+UART_HandleTypeDef huart4;
+DMA_HandleTypeDef hdma_uart4_rx;
+DMA_HandleTypeDef hdma_uart4_tx;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
+SD_MPU6050 mpu1, mpu2;
+static float a1_x, a1_y, a1_z, a2_x, a2_y, a2_z;
+static float g1_x, g1_y, g1_z, g2_x, g2_y, g2_z;
+static float temperature1, temperature2;
+static float *accel[3], *gyro[3], *temperature;
+static uint8_t data[14];
+extern I2C_HandleTypeDef *Handle;
+extern uint8_t reg, address;
+extern ReadingDevice numberofBytes;
+extern SD_MPU6050 *devicePointer;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_SPI4_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_UART4_Init(void);
 
-//These Two functions will be used to Transmit/Receive Data via SPI
-static int32_t SPI_Write(void *handle, uint8_t reg, uint8_t *bufp,uint16_t len, uint8_t cs);
-static int32_t SPI_Read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len, uint8_t cs);
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-
+static void setMeasurementPointers(SD_MPU6050 *device);
+static void setMeasurements(SD_MPU6050 *device);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
-void HAL_SPI_TxRxHalfCpltCallback(SPI_HandleTypeDef *hspi)
+void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-  /* Prevent unused argument(s) compilation warning */
-  /* NOTE : This function should not be modified, when the callback is needed,
-            the HAL_SPI_TxHalfCpltCallback should be implemented in the user file
-   */
+  HAL_I2C_Master_Receive_DMA(Handle, (uint16_t)address, data, numberofBytes);
 }
-void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
- /* Prevent unused argument(s) compilation warning */
- /* NOTE : This function should not be modified, when the callback is needed,
-           the HAL_SPI_TxCpltCallback should be implemented in the user file
-  */
+  if (numberofBytes == Accelerometer && reg == 0x3B)
+  {
+    /* Format */
+    devicePointer->Accelerometer_X = (int16_t)(data[0] << 8 | data[1]);
+    devicePointer->Accelerometer_Y = (int16_t)(data[2] << 8 | data[3]);
+    devicePointer->Accelerometer_Z = (int16_t)(data[4] << 8 | data[5]);
+  }
+  else if (numberofBytes == Gyroscope && reg == 0x43)
+  {
+    /* Format */
+    devicePointer->Gyroscope_X = (int16_t)(data[0] << 8 | data[1]);
+    devicePointer->Gyroscope_Y = (int16_t)(data[2] << 8 | data[3]);
+    devicePointer->Gyroscope_Z = (int16_t)(data[4] << 8 | data[5]);
+  }
+  else if (numberofBytes == Temperature && reg == 0x41)
+  {
+    devicePointer->Temperature = (float)((int16_t)(data[0] << 8 | data[1]) / (float)340.0 + (float)36.53);
+  }
+  else
+  {
+    /* Format */
+    devicePointer->Accelerometer_X = (int16_t)(data[0] << 8 | data[1]);
+    devicePointer->Accelerometer_Y = (int16_t)(data[2] << 8 | data[3]);
+    devicePointer->Accelerometer_Z = (int16_t)(data[4] << 8 | data[5]);
+
+    devicePointer->Temperature = (float)((int16_t)(data[0] << 8 | data[1]) / (float)340.0 + (float)36.53);
+
+    /* Format */
+    devicePointer->Gyroscope_X = (int16_t)(data[0] << 8 | data[1]);
+    devicePointer->Gyroscope_Y = (int16_t)(data[2] << 8 | data[3]);
+    devicePointer->Gyroscope_Z = (int16_t)(data[4] << 8 | data[5]);
+  }
+  setMeasurementPointers(devicePointer);
+  setMeasurements(devicePointer);
+}
+static void setMeasurementPointers(SD_MPU6050 *Handle)
+{
+  if (Handle->DeviceNumber == 0)
+  {
+    accel[0] = &a1_x;
+    accel[1] = &a1_y;
+    accel[2] = &a1_z;
+    gyro[0] = &g1_x;
+    gyro[1] = &g1_y;
+    gyro[2] = &g1_z;
+    temperature = &temperature1;
+  }
+  else
+  {
+    accel[0] = &a2_x;
+    accel[1] = &a2_y;
+    accel[2] = &a2_z;
+    gyro[0] = &g2_x;
+    gyro[1] = &g2_y;
+    gyro[2] = &g2_z;
+    temperature = &temperature2;
+  }
+}
+static void setMeasurements(SD_MPU6050 *Handle)
+{
+  *accel[0] = Handle->Accelerometer_X / 16384.0f;
+  *accel[1] = Handle->Accelerometer_Y / 16384.0f;
+  *accel[2] = Handle->Accelerometer_Z / 16384.0f;
+  *gyro[0] = Handle->Gyroscope_X / 131.0f;
+  *gyro[1] = Handle->Gyroscope_Y / 131.0f;
+  *gyro[2] = Handle->Gyroscope_Z / 131.0f;
+  *temperature = Handle->Temperature;
 }
 /* USER CODE END 0 */
 
@@ -122,20 +166,20 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+  SD_MPU6050_Result result;
+  uint8_t mpu_ok[15] = {"MPU WORK FINE\n"};
+  uint8_t mpu_not[17] = {"MPU NOT WORKING\n"};
+  mpu1.DeviceNumber = 0;
+  mpu2.DeviceNumber = 1;
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
   /* USER CODE BEGIN Init */
-  uint16_t pattern_len;
-  lsm6ds3_int1_route_t int_1_reg;
-  stmdev_ctx_t dev_ctx;
-  dev_ctx.write_reg = SPI_Write;
-  dev_ctx.read_reg = SPI_Read;
-  dev_ctx.handle = &hspi1;
+
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -148,83 +192,24 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_SPI1_Init();
-  MX_SPI4_Init();
+  MX_I2C1_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
-  int i;
-  for (i = 0; i < IMUNUM; i++)
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+  HAL_Delay(500);
+  result = SD_MPU6050_Init(&hi2c1, &mpu1, SD_MPU6050_Device_0, SD_MPU6050_Accelerometer_2G, SD_MPU6050_Gyroscope_250s);
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
   {
-    cs = i;
-    lsm6ds3_device_id_get(&dev_ctx, &whoamI);
-    if (whoamI != LSM6DS3_ID)
-    while(1)
-      {
-        deviceError = "ERROR: IMU 0 was not detected!!!!";
-      }
-    lsm6ds3_reset_set(&dev_ctx, PROPERTY_ENABLE);
-    do
-    {
-      lsm6ds3_reset_get(&dev_ctx, &rst);
-    }while (rst);
-    /*
-   * Set XL full scale and Gyro full scale
-   */
-    lsm6ds3_xl_full_scale_set(&dev_ctx, LSM6DS3_2g);
-    lsm6ds3_gy_full_scale_set(&dev_ctx, LSM6DS3_500dps);
-    /*
-   * Enable Block Data Update (BDU) when FIFO support selected
-   */
-    lsm6ds3_block_data_update_set(&dev_ctx, PROPERTY_ENABLE);
-    /*
-   * Set FIFO watermark to a multiple of a pattern
-   * in this example we set watermark to 10 pattern
-   * which means ten sequence of:
-   * (GYRO + XL) = 12 bytes
-   */
-    pattern_len = 12;
-    lsm6ds3_fifo_watermark_set(&dev_ctx, 10 * pattern_len);
-    /*
-   * Set FIFO mode to Stream mode
-   */
-    lsm6ds3_fifo_mode_set(&dev_ctx, LSM6DS3_STREAM_MODE);
-    /*
-   * Enable FIFO watermark interrupt generation on INT1 pin
-   */
-    lsm6ds3_pin_int1_route_get(&dev_ctx, &int_1_reg);
-    int_1_reg.int1_fth = PROPERTY_ENABLE;
-    lsm6ds3_pin_int1_route_set(&dev_ctx, &int_1_reg);
 
-    /*
-   * FIFO watermark interrupt on INT2 pin
-    /*
-   * Set FIFO sensor decimator
-   */
-    lsm6ds3_fifo_xl_batch_set(&dev_ctx, LSM6DS3_FIFO_XL_NO_DEC);
-    lsm6ds3_fifo_gy_batch_set(&dev_ctx, LSM6DS3_FIFO_GY_NO_DEC);
-    /*
-   * Set ODR FIFO
-   */
-    lsm6ds3_fifo_data_rate_set(&dev_ctx, LSM6DS3_FIFO_833Hz);
-    /*
-   * Set XL and Gyro Output Data Rate:
-   * in this example we set 52 Hz for Accelerometer and
-   * 52 Hz for Gyroscope
-   */
-    lsm6ds3_xl_data_rate_set(&dev_ctx, LSM6DS3_XL_ODR_833Hz);
-    lsm6ds3_gy_data_rate_set(&dev_ctx, LSM6DS3_GY_ODR_833Hz);
-  }
-  cs = 0;
-   /* USER CODE END 2 */
-
-   /* Infinite loop */
-   /* USER CODE BEGIN WHILE */
-   while (1)
-   {
-
-     /* USER CODE END WHILE */
-
-     /* USER CODE BEGIN 3 */
-
+  /* USER CODE END WHILE */
+	
+  /* USER CODE BEGIN 3 */
+	SD_MPU6050_ReadAll(&hi2c1, &mpu1);
+   //SD_MPU6050_ReadAll(&hi2c1, &mpu2);
   }
   /* USER CODE END 3 */
 
@@ -288,48 +273,39 @@ void SystemClock_Config(void)
   HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
 }
 
-/* SPI1 init function */
-static void MX_SPI1_Init(void)
+/* I2C1 init function */
+static void MX_I2C1_Init(void)
 {
 
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
-  hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
 
 }
 
-/* SPI4 init function */
-static void MX_SPI4_Init(void)
+/* UART4 init function */
+static void MX_UART4_Init(void)
 {
 
-  /* SPI4 parameter configuration*/
-  hspi4.Instance = SPI4;
-  hspi4.Init.Mode = SPI_MODE_MASTER;
-  hspi4.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi4.Init.CLKPolarity = SPI_POLARITY_HIGH;
-  hspi4.Init.CLKPhase = SPI_PHASE_2EDGE;
-  hspi4.Init.NSS = SPI_NSS_SOFT;
-  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
-  hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi4.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi4.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi4) != HAL_OK)
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 115200;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
@@ -342,18 +318,21 @@ static void MX_SPI4_Init(void)
 static void MX_DMA_Init(void) 
 {
   /* DMA controller clock enable */
-  __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-  /* DMA2_Stream1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
-  /* DMA2_Stream3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
+  /* DMA1_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+  /* DMA1_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
+  /* DMA1_Stream4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 
@@ -370,11 +349,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct;
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3|GPIO_PIN_4, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PA3 PA4 */
   GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4;
@@ -383,51 +366,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PC8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
 }
 
 /* USER CODE BEGIN 4 */
-/*
- * @brief  Write generic device register (platform dependent)
- *
- * @param  handle    customizable argument. In this examples is used in
- *                   order to select the correct sensor bus handler.
- * @param  reg       register to write
- * @param  bufp      pointer to data to write in register reg
- * @param  len       number of consecutive register to write
- *
- */
-static int32_t SPI_Write(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len, uint8_t cs)
-{
-	if(cs == 0)
-	    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
-	else
-	    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(handle, &reg, 1, 1000);
-    HAL_SPI_Transmit(handle, bufp, len, 1000);
-    HAL_GPIO_WritePin(CS_up_GPIO_Port, CS_up_Pin, GPIO_PIN_SET);
-    return 0;
-}
 
-/*
- * @brief  Read generic device register (platform dependent)
- *
- * @param  handle    customizable argument. In this examples is used in
- *                   order to select the correct sensor bus handler.
- * @param  reg       register to read
- * @param  bufp      pointer to buffer that store the data read
- * @param  len       number of consecutive register to read
- *
- */
-static int32_t SPI_Read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len, uint8_t cs)
-{
-    /* Read command */
-    reg |= 0x80;
-    HAL_GPIO_WritePin(CS_up_GPIO_Port, CS_up_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(handle, &reg, 1, 1000);
-    HAL_SPI_Receive(handle, bufp, len, 1000);
-    HAL_GPIO_WritePin(CS_up_GPIO_Port, CS_up_Pin, GPIO_PIN_SET);
-    return 0;
-}
 /* USER CODE END 4 */
 
 /**
@@ -440,7 +389,7 @@ void _Error_Handler(char *file, int line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  while(1)
+  while (1)
   {
   }
   /* USER CODE END Error_Handler_Debug */
@@ -458,7 +407,7 @@ void assert_failed(uint8_t* file, uint32_t line)
 { 
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
-     tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+    ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
